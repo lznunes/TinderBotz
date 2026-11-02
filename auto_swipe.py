@@ -6,23 +6,25 @@ Definitly take a look at quickstart.py for more features!
 '''
 
 from tinderbotz.session import Session
-from tinderbotz.helpers.constants_helper import *
+from selenium.common.exceptions import InvalidSessionIdException, NoSuchWindowException
 
 if __name__ == "__main__":
 
-    # creates instance of session
-    session = Session()
+    session = None
+    try:
+        # creates instance of session
+        session = Session()
+        print("Para cancelar a qualquer momento, pressione Ctrl+C neste terminal.")
     
-    # replace this with your own email and password!
-    email = "example@gmail.com"
-    password = "password123"
-    
-    # login using either your facebook account or google account (delete the line of code you don't need)
-    session.login_using_facebook(email, password)
-    session.login_using_google(email, password)
-    
-    # spam likes
-    # amount -> amount of people you want to like
-    # ratio  -> chance of liking/disliking
-    # sleep  -> amount of seconds to wait before swiping again
-    session.like(amount=100, ratio="72.5%", sleep=1)
+        session.login_manually()
+        answer = input("Login concluido. Iniciar ate 200 likes? Digite s para iniciar: ")
+        if answer.strip().lower() == "s":
+            session.like(amount=200, ratio="100%", sleep=1)
+
+    except (KeyboardInterrupt, EOFError):
+        print("\nExecucao cancelada pelo usuario.")
+    except (InvalidSessionIdException, NoSuchWindowException):
+        print("\nNavegador fechado. Execucao encerrada.")
+    finally:
+        if session is not None:
+            session.close()

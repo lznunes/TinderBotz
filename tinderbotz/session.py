@@ -1,11 +1,9 @@
 # Selenium: automation of browser
 from selenium import webdriver
-# from webdriver_manager.chrome import ChromeDriverManager
-import undetected_chromedriver.v2 as uc
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import NoSuchElementException, TimeoutException, ElementNotVisibleException
+from selenium.common.exceptions import NoSuchElementException, TimeoutException, ElementNotVisibleException, WebDriverException
 from selenium.webdriver.common.by import By
 
 
@@ -17,6 +15,7 @@ import random
 import requests
 import atexit
 from pathlib import Path
+from shutil import which
 
 # Tinderbotz: helper classes
 from tinderbotz.helpers.geomatch import Geomatch
@@ -28,6 +27,7 @@ from tinderbotz.helpers.match_helper import MatchHelper
 from tinderbotz.helpers.login_helper import LoginHelper
 from tinderbotz.helpers.storage_helper import StorageHelper
 from tinderbotz.helpers.email_helper import EmailHelper
+from tinderbotz.helpers.popup_helper import PopupHelper
 from tinderbotz.helpers.constants_helper import Printouts
 from tinderbotz.helpers.xpaths import *
 from tinderbotz.addproxy import get_proxy_extension
@@ -36,7 +36,23 @@ from tinderbotz.addproxy import get_proxy_extension
 class Session:
     HOME_URL = "https://www.tinder.com/app/recs"
 
-    def __init__(self, headless=False, store_session=True, proxy=None, user_data=False):
+    def __init__(self, headless=False, store_session=True, proxy=None, user_data=False,
+                 browser_executable_path=None):
+        self.browser = None
+        self.started = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        browser_path = (
+            browser_executable_path
+            or os.environ.get("CHROME_BINARY")
+            or next((path for name in ("google-chrome", "google-chrome-stable",
+                                       "chromium", "chromium-browser", "chrome")
+                     if (path := which(name))), None)
+        )
+        if not browser_path or not Path(browser_path).is_file() or not os.access(browser_path, os.X_OK):
+            raise FileNotFoundError(
+                "Chrome/Chromium executavel nao encontrado. Instale o navegador no "
+                "mesmo ambiente do Python (Linux no WSL) ou informe seu caminho "
+                "com CHROME_BINARY ou Session(browser_executable_path=...)."
+            )
         self.email = None
         self.may_send_email = False
         self.session_data = {
@@ -49,7 +65,6 @@ class Session:
         start_session = time.time()
 
         # this function will run when the session ends
-        @atexit.register
         def cleanup():
             # End session duration
             seconds = int(time.time() - start_session)
@@ -71,29 +86,30 @@ class Session:
                 print("Ended session: {}".format(y))
             
             # Close browser properly
-            self.browser.quit()
+            self.close()
 
         # Go further with the initialisation
         # Setting some options of the browser here below
 
-        options = uc.ChromeOptions()
+        options = webdriver.ChromeOptions()
+        options.binary_location = str(browser_path)
 
         # Create empty profile to avoid annoying Mac Popup
         if store_session:
             if not user_data:
                 user_data = f"{Path().absolute()}/chrome_profile/"
-            if not os.path.isdir(user_data):
-                os.mkdir(user_data)
-
-            Path(f'{user_data}First Run').touch()
-            options.add_argument(f"--user-data-dir={user_data}")
+            profile_path = Path(user_data).resolve()
+            profile_path.mkdir(parents=True, exist_ok=True)
+            (profile_path / 'First Run').touch()
+            options.add_argument(f"--user-data-dir={profile_path}")
 
         #options.add_argument("--start-maximized")
-        options.add_argument('--no-first-run --no-service-autorun --password-store=basic')
+        for argument in ('--no-first-run', '--no-service-autorun', '--password-store=basic'):
+            options.add_argument(argument)
         options.add_argument("--lang=en-GB")
 
         if headless:
-            options.headless = True
+            options.add_argument("--headless=new")
 
         if proxy:
             if '@' in proxy:
@@ -112,7 +128,8 @@ class Session:
 
         # Getting the chromedriver from cache or download it from internet
         print("Getting ChromeDriver ...")
-        self.browser = uc.Chrome(options=options)  # ChromeDriverManager().install(),
+        self.browser = webdriver.Chrome(options=options)
+        atexit.register(cleanup)
         # self.browser = webdriver.Chrome(options=options)
         # self.browser.set_window_size(1250, 750)
 
@@ -127,6 +144,16 @@ class Session:
         print("Started session: {}\n\n".format(self.started))
 
     # Setting a custom location
+    def close(self):
+        """Release the browser, including sessions cancelled before login."""
+        browser, self.browser = self.browser, None
+        if browser is not None:
+            try:
+                browser.quit()
+            except WebDriverException:
+                # The user may already have closed the browser window.
+                pass
+
     def set_custom_location(self, latitude, longitude, accuracy="100%"):
 
         params = {
@@ -167,6 +194,16 @@ class Session:
         helper.add_photo(filepath)
 
     # Actions of the session
+    def login_manually(self):
+        """Keep the browser open while the user completes authentication."""
+        self.browser.get("https://tinder.com/?lang=en")
+        while True:
+            input("Conclua o login no navegador. Depois, pressione ENTER aqui "
+                  "(Ctrl+C para cancelar): ")
+            if self._is_logged_in():
+                return
+            print("Login ainda nao identificado. A janela continuara aberta para tentar novamente.")
+
     def login_using_google(self, email, password):
         self.email = email
         if not self._is_logged_in():
@@ -226,6 +263,7 @@ class Session:
             self._handle_potential_popups()
             print("\nLiking profiles started.")
             while amount_liked < amount:
+                self._handle_potential_popups()
                 # randomize sleep
                 if randomize_sleep:
                     sleep = random.uniform(0.5, 2.3) * initial_sleep
@@ -240,7 +278,7 @@ class Session:
                     # update for stats after session ended
                     self.session_data['dislike'] += 1
 
-                #self._handle_potential_popups()
+                self._handle_potential_popups()
                 time.sleep(sleep)
 
             self._print_liked_stats()
@@ -347,121 +385,17 @@ class Session:
 
     # Utilities
     def _handle_potential_popups(self):
-        delay = 0.25
+        def notify_match():
+            if getattr(self, 'may_send_email', False):
+                try:
+                    EmailHelper.send_mail_match_found(self.email)
+                except Exception as error:
+                    print("Could not send match notification: {}".format(error))
 
-        # last possible id based div
-        base_element = self.browser.find_element(By.XPATH, modal_manager)
-
-        # try to deny see who liked you
-        try:
-            xpath = './/main/div/div/div[3]/button[2]'
-            WebDriverWait(base_element, delay).until(
-                EC.presence_of_element_located((By.XPATH, xpath)))
-
-            deny_btn = base_element.find_element(By.XPATH, xpath)
-            deny_btn.click()
-            return "POPUP: Denied see who liked you"
-
-        except NoSuchElementException:
-            pass
-        except TimeoutException:
-            pass
-
-        # Try to dismiss a potential 'upgrade like' popup
-        try:
-            # locate "no thanks"-button
-            xpath = './/main/div/button[2]'
-            base_element.find_element(By.XPATH, xpath).click()
-            return "POPUP: Denied upgrade to superlike"
-        except NoSuchElementException:
-            pass
-
-        # try to deny 'add tinder to homescreen'
-        try:
-            xpath = './/main/div/div[2]/button[2]'
-
-            add_to_home_popup = base_element.find_element(By.XPATH, xpath)
-            add_to_home_popup.click()
-            return "POPUP: Denied Tinder to homescreen"
-
-        except NoSuchElementException:
-            pass
-
-        # deny buying more superlikes
-        try:
-            xpath = './/main/div/div[3]/button[2]'
-            deny = base_element.find_element(By.XPATH, xpath)
-            deny.click()
-            return "POPUP: Denied buying more superlikes"
-        except NoSuchElementException:
-            pass
-
-        # try to dismiss match
-        matched = False
-        try:
-            xpath = '//button[@title="Back to Tinder"]'
-
-            match_popup = base_element.find_element(By.XPATH, xpath)
-            match_popup.click()
-            matched = True
-
-        except NoSuchElementException:
-            pass
-        except:
-            matched = True
-            self.browser.refresh()
-
-        if matched and self.may_send_email:
-            try:
-                EmailHelper.send_mail_match_found(self.email)
-            except:
-                print("Some error occurred when trying to send mail.")
-                print("Consider opening an Issue on Github.")
-                pass
-            return "POPUP: Dismissed NEW MATCH"
-
-        # try to say 'no thanks' to buy more (super)likes
-        try:
-            xpath = './/main/div/div[3]/button[2]'
-            deny_btn = base_element.find_element(By.XPATH, xpath)
-            deny_btn.click()
-            return "POPUP: Denied buying more superlikes"
-
-        except ElementNotVisibleException:
-            # element is not clickable, probably cuz it's out of view but still there
-            self.browser.refresh()
-        except NoSuchElementException:
-            pass
-        except:
-            # TBD add stale element exception for now just refresh page
-            self.browser.refresh()
-            pass
-
-        # Deny confirmation of email
-        try:
-            xpath = './/main/div/div[1]/div[2]/button[2]'
-            remindmelater = base_element.find_element(By.XPATH, xpath)
-            remindmelater.click()
-
-            time.sleep(3)
-            # handle other potential popups
-            self._handle_potential_popups()
-            return "POPUP: Deny confirmation of email"
-        except:
-            pass
-
-        # Deny add location popup
-        try:
-            xpath = ".//*[contains(text(), 'No Thanks')]"
-            nothanks = base_element.find_element(By.XPATH, xpath)
-            nothanks.click()
-            time.sleep(3)
-            # handle other potential popups
-            self._handle_potential_popups()
-            return "POPUP: Deny confirmation of email"
-        except:
-            pass
-
+        helper = PopupHelper(self.browser, on_match=notify_match)
+        while not helper.dismiss():
+            input("Popup sem opcao de fechar reconhecida. Feche-o no navegador e "
+                  "pressione ENTER para continuar (Ctrl+C para cancelar): ")
         return None
 
     def _is_logged_in(self):

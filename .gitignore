@@ -7,3 +7,4 @@ dist
 build
 __pycache__/
 chrome_profile/
+node_modules

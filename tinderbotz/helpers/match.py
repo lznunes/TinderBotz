@@ -7,7 +7,11 @@ class Match(Geomatch):
         self.chatid = chatid
 
         # invoking the __init__ of the parent class
-        Geomatch.__init__(self, name, age, work, study, home, gender, bio, distance, passions, image_urls)
+        super().__init__(
+            name=name, age=age, work=work, study=study, home=home,
+            gender=gender, bio=bio, lifestyle=None, basics=None, anthem=None,
+            distance=distance, passions=passions, image_urls=image_urls,
+        )
 
     def get_chat_id(self):
         return self.chatid
